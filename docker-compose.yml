@@ -1,0 +1,24 @@
+version: '3.9'
+services:
+  api:
+    build: .
+    ports:
+      - '8000:8000'
+    volumes:
+      - ./:/app
+      - model-cache:/root/.cache
+    environment:
+      - DATASET_CSV=/app/data/billboards.csv
+    depends_on:
+      - chroma
+
+  chroma:
+    image: chromadb/chroma:0.5.23
+    ports:
+      - '8001:8000'
+    volumes:
+      - chroma-data:/chroma/chroma
+
+volumes:
+  model-cache:
+  chroma-data:
