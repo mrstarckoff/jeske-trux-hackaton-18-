@@ -1,42 +1,36 @@
-# Smart Billboard Geo Search (Hackathon Case #2)
+# Smart Billboard Geo Search (Weighted RRF Orchestrator)
 
-Мультимодальный REST API для поиска рекламных поверхностей по изображению, тексту, аудио и координатам.
+Мультимодальный REST API: image + audio + text + coords -> Top-5 рекламных поверхностей.
 
-## Архитектура (вариант 3)
+## Что сделано под роль «Леха» (Infra / Prompt Engineer)
 
-- **Orchestrator/Gateway (FastAPI)**: принимает `image`, `audio`, `text`, `lat/lon`, делает инвентаризацию модальностей и параллельно запускает сервисы через `asyncio.gather`.
-- **OCR & ASR service**:
-  - строгий GID regex: `^[A-Z]{4}\d{5}[A-ZА-Я]$`
-  - нормализация OCR-путаницы кириллица/латиница в префиксе (например `В` → `B`)
-  - выделение координат с поддержкой `.`/`,` и валидацией диапазонов lat/lon
-  - `INITIAL_WHISPER_PROMPT` с рекламными терминами для повышения качества транскрипции.
-- **Vector search service**: mock-векторизация и Top-K поиск (структурно совместим с OpenCLIP + ChromaDB).
-- **Geo service**: фильтрация по радиусу 100–200 м (haversine), ранжирование по близости.
-- **Mock DB service**: читает CSV и возвращает структурированные карточки (вложенные coordinates + тип поверхности).
-- **Final Fusion**: Weighted RRF с динамическими весами.
+- **Docker Compose** с healthchecks, `depends_on: service_healthy`, общими volume для CSV/индекса.
+- **Regex & Prompts**:
+  - строгий GID-паттерн `^[A-Z]{4}\d{5}[A-ZА-Я]$`
+  - нормализация OCR-путаницы `A/А`, `B/В`
+  - `INITIAL_WHISPER_PROMPT` с доменными терминами: *Ангарск, билборд, широта, долгота*.
+- **NLP extraction**:
+  - Natasha (`AddrExtractor`) для извлечения адресных сущностей из текста/ASR
+  - fallback regex для адресов, если Natasha недоступна.
+- **Mock DB**:
+  - отдача структурированных JSON-карточек по GID (`/objects/{gid}`)
+  - список `/objects`, поиск и `/nearest`.
+- **Тестирование модальностей**:
+  - `scripts/test_requests.py` покрывает text+coords, audio, image, full multimodal.
 
-## Repository layout
+## Общий pipeline (Вариант №3)
 
-```text
-services/
-  orchestrator/
-  ocr_asr/
-  vector_search/
-  geo/
-  mock_db/
-data/billboards.csv
-scripts/index_chroma.py
-scripts/test_requests.py
-docker-compose.yml
-```
-
-## Infrastructure focus (Docker)
-
-- единое окружение через `docker-compose.yml`
-- healthcheck для каждого сервиса
-- `depends_on: condition: service_healthy` для orchestrator
-- оптимизация Docker-слоев: отдельный слой для `requirements.txt`, затем копирование кода
-- `.dockerignore` для уменьшения контекста сборки.
+1. Оркестратор принимает multipart (`/search`) и параллельно запускает сервисы (`asyncio.gather`).
+2. OCR/ASR + NLP извлекают GID, координаты, адреса.
+3. Retrieval:
+   - visual Top-10
+   - semantic Top-10
+   - lexical Top-10 (RapidFuzz)
+   - geo candidates (до 1 км)
+4. Fusion через Weighted RRF:
+   - exact GID: OCR=1.0 (short-circuit)
+   - multimodal: visual=0.4, semantic=0.3, lexical=0.15, geo=0.15
+5. Финализация: confidence (sigmoid), enrich карточками из mock DB.
 
 ## Быстрый запуск
 
@@ -44,48 +38,13 @@ docker-compose.yml
 docker compose up --build
 ```
 
-Orchestrator: `http://localhost:8000`
-- Swagger: `http://localhost:8000/docs`
-- Health: `http://localhost:8000/health`
+Swagger: `http://localhost:8000/docs`
 
-## Примеры ручных проверок (curl)
-
-### text + coords
-
-```bash
-curl -X POST http://localhost:8000/search \
-  -F 'text=щит рядом с Тверской' \
-  -F 'lat=55.757' \
-  -F 'lon=37.615'
-```
-
-### audio
-
-```bash
-curl -X POST http://localhost:8000/search \
-  -F 'audio=@sample.txt'
-```
-
-### image
-
-```bash
-curl -X POST http://localhost:8000/search \
-  -F 'image=@sample.jpg'
-```
-
-## Индексация (первые 4 часа)
-
-```bash
-python scripts/index_chroma.py
-```
-
-Скрипт создает mock-индекс `data/mock_index.json` из CSV.
-
-## Тестирование
+## Локальные проверки
 
 ```bash
 pip install -r requirements-dev.txt
 pytest -q
+python scripts/index_chroma.py
 python scripts/test_requests.py
 ```
-
