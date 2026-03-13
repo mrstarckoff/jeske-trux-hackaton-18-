@@ -1,0 +1,44 @@
+version: '3.9'
+services:
+  orchestrator:
+    build: ./services/orchestrator
+    container_name: orchestrator
+    ports:
+      - "8000:8000"
+    depends_on:
+      - ocr_asr
+      - vector_search
+      - geo
+      - mock_db
+
+  ocr_asr:
+    build: ./services/ocr_asr
+    container_name: ocr_asr
+    command: uvicorn main:app --host 0.0.0.0 --port 8001
+
+  vector_search:
+    build: ./services/vector_search
+    container_name: vector_search
+    command: uvicorn main:app --host 0.0.0.0 --port 8002
+    environment:
+      - BILLBOARD_CSV=/data/billboards.csv
+    volumes:
+      - ./data:/data:ro
+
+  geo:
+    build: ./services/geo
+    container_name: geo
+    command: uvicorn main:app --host 0.0.0.0 --port 8003
+    environment:
+      - BILLBOARD_CSV=/data/billboards.csv
+    volumes:
+      - ./data:/data:ro
+
+  mock_db:
+    build: ./services/mock_db
+    container_name: mock_db
+    command: uvicorn main:app --host 0.0.0.0 --port 8004
+    environment:
+      - BILLBOARD_CSV=/data/billboards.csv
+    volumes:
+      - ./data:/data:ro
