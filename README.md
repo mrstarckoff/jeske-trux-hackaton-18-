@@ -4,16 +4,18 @@
 
 ## Архитектура (вариант 3)
 
-- **Orchestrator/Gateway (FastAPI)**: принимает `image`, `audio`, `text`, `lat/lon`, проводит инвентаризацию модальностей и параллельно запускает сервисы через `asyncio.gather`.
+- **Orchestrator/Gateway (FastAPI)**: принимает `image`, `audio`, `text`, `lat/lon`, делает инвентаризацию модальностей и параллельно запускает сервисы через `asyncio.gather`.
 - **OCR & ASR service**:
-  - Regex GID: `^[A-ZА-Я]{4}\d{5}[A-ZА-Я]$`
-  - initial prompt для Whisper-подобного пайплайна вынесен в константу `INITIAL_WHISPER_PROMPT`.
-- **Vector search service**: mock-векторизация и Top-K поиск (структурно совместим с идеей OpenCLIP + ChromaDB).
+  - строгий GID regex: `^[A-Z]{4}\d{5}[A-ZА-Я]$`
+  - нормализация OCR-путаницы кириллица/латиница в префиксе (например `В` → `B`)
+  - выделение координат с поддержкой `.`/`,` и валидацией диапазонов lat/lon
+  - `INITIAL_WHISPER_PROMPT` с рекламными терминами для повышения качества транскрипции.
+- **Vector search service**: mock-векторизация и Top-K поиск (структурно совместим с OpenCLIP + ChromaDB).
 - **Geo service**: фильтрация по радиусу 100–200 м (haversine), ранжирование по близости.
-- **Mock DB service**: читает CSV и возвращает структурированные карточки объектов по GID.
+- **Mock DB service**: читает CSV и возвращает структурированные карточки (вложенные coordinates + тип поверхности).
 - **Final Fusion**: Weighted RRF с динамическими весами.
 
-## Репозиторий
+## Repository layout
 
 ```text
 services/
@@ -28,20 +30,27 @@ scripts/test_requests.py
 docker-compose.yml
 ```
 
+## Infrastructure focus (Docker)
+
+- единое окружение через `docker-compose.yml`
+- healthcheck для каждого сервиса
+- `depends_on: condition: service_healthy` для orchestrator
+- оптимизация Docker-слоев: отдельный слой для `requirements.txt`, затем копирование кода
+- `.dockerignore` для уменьшения контекста сборки.
+
 ## Быстрый запуск
 
 ```bash
 docker compose up --build
 ```
 
-Orchestrator доступен на `http://localhost:8000`.
-
+Orchestrator: `http://localhost:8000`
 - Swagger: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
 
-## Примеры запросов
+## Примеры ручных проверок (curl)
 
-### 1) Только текст + координаты
+### text + coords
 
 ```bash
 curl -X POST http://localhost:8000/search \
@@ -50,11 +59,18 @@ curl -X POST http://localhost:8000/search \
   -F 'lon=37.615'
 ```
 
-### 2) Аудио (как текстовый mock payload)
+### audio
 
 ```bash
 curl -X POST http://localhost:8000/search \
   -F 'audio=@sample.txt'
+```
+
+### image
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -F 'image=@sample.jpg'
 ```
 
 ## Индексация (первые 4 часа)
@@ -65,17 +81,11 @@ python scripts/index_chroma.py
 
 Скрипт создает mock-индекс `data/mock_index.json` из CSV.
 
-## Тесты
+## Тестирование
 
 ```bash
 pip install -r requirements-dev.txt
 pytest -q
+python scripts/test_requests.py
 ```
 
-## Что покрыто под роль Infrastructure & Prompt Engineer
-
-- Docker Compose для всех микросервисов.
-- Regex-паттерн GID и выделение координат из текста/ASR.
-- initial_prompt для ASR-транскрипции рекламных терминов.
-- Mock database слой из CSV в JSON-карточки.
-- Набор тестовых запросов (`scripts/test_requests.py`) и unit-тесты.

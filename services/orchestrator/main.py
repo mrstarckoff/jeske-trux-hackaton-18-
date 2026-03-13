@@ -1,16 +1,17 @@
 import asyncio
 import base64
 import math
+import os
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-OCR_ASR_URL = "http://ocr_asr:8001"
-VECTOR_URL = "http://vector_search:8002"
-GEO_URL = "http://geo:8003"
-MOCK_DB_URL = "http://mock_db:8004"
+OCR_ASR_URL = os.getenv("OCR_ASR_URL", "http://ocr_asr:8001")
+VECTOR_URL = os.getenv("VECTOR_URL", "http://vector_search:8002")
+GEO_URL = os.getenv("GEO_URL", "http://geo:8003")
+MOCK_DB_URL = os.getenv("MOCK_DB_URL", "http://mock_db:8004")
 
 RRF_K = 60
 
@@ -70,19 +71,19 @@ async def search(
     lat: float | None = Form(default=None),
     lon: float | None = Form(default=None),
 ):
-    tasks = []
+    if image is None and audio is None and not text and (lat is None or lon is None):
+        raise HTTPException(status_code=422, detail="Provide at least one modality: image/audio/text/lat+lon")
+
     debug = {"modalities": []}
     image_b64 = None
 
     if image is not None:
-        raw = await image.read()
-        image_b64 = base64.b64encode(raw).decode("utf-8")
+        image_b64 = base64.b64encode(await image.read()).decode("utf-8")
         debug["modalities"].append("image")
 
     audio_b64 = None
     if audio is not None:
-        raw = await audio.read()
-        audio_b64 = base64.b64encode(raw).decode("utf-8")
+        audio_b64 = base64.b64encode(await audio.read()).decode("utf-8")
         debug["modalities"].append("audio")
 
     if text:
@@ -91,7 +92,7 @@ async def search(
         debug["modalities"].append("coords")
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        req_map = {}
+        req_map: dict[str, httpx.Response] = {}
         if image_b64:
             req_map["ocr_image"] = client.post(f"{OCR_ASR_URL}/extract/image", json={"image_b64": image_b64})
             req_map["visual"] = client.post(f"{VECTOR_URL}/search/image", json={"image_b64": image_b64, "top_k": 10})
@@ -104,16 +105,21 @@ async def search(
 
         names = list(req_map)
         responses = await asyncio.gather(*req_map.values())
-        payloads = {name: resp.json() for name, resp in zip(names, responses)}
+        payloads = {}
+        for name, resp in zip(names, responses):
+            resp.raise_for_status()
+            payloads[name] = resp.json()
 
         extracted_gid = None
         if "ocr_image" in payloads:
             extracted_gid = payloads["ocr_image"].get("gid")
+
         if "audio" in payloads:
             extracted_gid = extracted_gid or payloads["audio"].get("gid")
             if not text and payloads["audio"].get("transcript"):
                 text = payloads["audio"]["transcript"]
                 sem_resp = await client.post(f"{VECTOR_URL}/search/text", json={"text": text, "top_k": 10})
+                sem_resp.raise_for_status()
                 payloads["semantic"] = sem_resp.json()
             if (lat is None or lon is None) and payloads["audio"].get("extracted_lat") is not None:
                 lat = payloads["audio"]["extracted_lat"]
@@ -121,6 +127,7 @@ async def search(
                 geo_resp = await client.post(
                     f"{GEO_URL}/filter", json={"lat": lat, "lon": lon, "radius_m": 200.0, "top_k": 10}
                 )
+                geo_resp.raise_for_status()
                 payloads["geo"] = geo_resp.json()
 
         if extracted_gid:
